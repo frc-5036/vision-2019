@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import json
 import time
 import sys
@@ -9,10 +11,8 @@ import cv2
 import numpy as np
 from networktables import NetworkTables
 import math
-
 import datetime
-########### SET RESOLUTION TO 256x144 !!!! ############
-#Class to examine Frames per second of camera stream. Currently not used
+
 class FPS:
 	def __init__(self):
 		self._start = None
@@ -36,6 +36,10 @@ class FPS:
 		return self._numFrames / self.elapsed()
 
 class VideoShow:
+    """
+    Class that continuously shows a frame using a dedicated thread.
+    """
+
     def __init__(self, imgWidth, imgHeight, cameraServer, frame=None):
         self.outputStream = cameraServer.putVideo("stream", imgWidth, imgHeight)
         self.frame = frame
@@ -54,7 +58,6 @@ class VideoShow:
     def notifyError(self, error):
         self.outputStream.notifyError(error)
 
-# Class that runs a separate thread for reading  camera server also controlling exposure.
 class WebcamVideoStream:
     def __init__(self, camera, cameraServer, frameWidth, frameHeight, name="WebcamVideoStream"):
         self.webcam = camera
@@ -92,39 +95,31 @@ class WebcamVideoStream:
 
     def stop(self):
         self.stopped = True
-
     def getError(self):
         return self.stream.getError()
 
-###################### PROCESSING OPENCV ################################
-
-#*****Angles in radians*******
-
-#image size ratioed to 16:9
 image_width = 256
 image_height = 144
-#Webcam info from datasheets (that logitech one we bought)
+
 diagonalView = math.radians(58)
+
 horizontalAspect = 16
 verticalAspect = 9
-diagonalAspect = math.hypot(horizontalAspect, verticalAspect)
 
+diagonalAspect = math.hypot(horizontalAspect, verticalAspect)
 horizontalView = math.atan(math.tan(diagonalView/2) * (horizontalAspect / diagonalAspect)) * 2
 verticalView = math.atan(math.tan(diagonalView/2) * (verticalAspect / diagonalAspect)) * 2
+
 H_FOCAL_LENGTH = image_width / (2*math.tan((horizontalView/2)))
 V_FOCAL_LENGTH = image_height / (2*math.tan((verticalView/2)))
 
 green_blur = 7
+#orange_blur = 27
 
 # define range of green of retroreflective tape in HSV
-
-"""
-CHANGE ONLY THE NEXT 2 LINES WHEN TUNING THE CODE. USE GRIP TO FIND THESE VALUES!!!!!!!!!!!!!!!!!!!!
-"""
 lower_green = np.array([0,220,25])
 upper_green = np.array([101, 255, 255])
 
-#Flip image if camera mounted upside down
 def flipImage(frame):
     return cv2.flip( frame, -1 )
 
@@ -134,15 +129,12 @@ def blurImg(frame, blur_radius):
     return blur
 
 def threshold_video(lower_color, upper_color, blur):
+
     hsv = cv2.cvtColor(blur, cv2.COLOR_BGR2HSV)
     mask = cv2.inRange(hsv, lower_color, upper_color)
     return mask
 
-
-
-# Finds the tape targets from the masked image and displays them on original stream + network tales
 def findTargets(frame, mask):
-    # Finds contours
     _, contours, _ = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_TC89_KCOS)
     screenHeight, screenWidth, _ = frame.shape
     centerX = (screenWidth / 2) - .5
@@ -151,10 +143,6 @@ def findTargets(frame, mask):
     if len(contours) != 0:
         image = findTape(contours, image, centerX, centerY)
     return image
-
-# Draws Contours and finds center and yaw of vision targets
-# centerX is center x coordinate of image
-# centerY is center y coordinate of image
 def findTape(contours, image, centerX, centerY):
     screenHeight, screenWidth, channels = image.shape
     targets = []
@@ -175,33 +163,39 @@ def findTape(contours, image, centerX, centerY):
                 else:
                     cx, cy = 0, 0
                 if(len(biggestCnts) < 13):
-                    #### CALCULATES ROTATION OF CONTOUR BY FITTING ELLIPSE ##########
                     rotation = getEllipseRotation(image, cnt)
+
                     yaw = calculateYaw(cx, centerX, H_FOCAL_LENGTH)
                     pitch = calculatePitch(cy, centerY, V_FOCAL_LENGTH)
+
                     rect = cv2.minAreaRect(cnt)
                     box = cv2.boxPoints(rect)
                     box = np.int0(box)
                     cv2.drawContours(image, [box], 0, (23, 184, 80), 3)
+
                     yaw = calculateYaw(cx, centerX, H_FOCAL_LENGTH)
                     pitch = calculatePitch(cy, centerY, V_FOCAL_LENGTH)
+
                     cv2.line(image, (cx, screenHeight), (cx, 0), (255, 255, 255))
                     cv2.circle(image, (cx, cy), 6, (255, 255, 255))
+
                     cv2.drawContours(image, [cnt], 0, (23, 184, 80), 1)
+
                     (x, y), radius = cv2.minEnclosingCircle(cnt)
                     center = (int(x), int(y))
                     radius = int(radius)
                     rx, ry, rw, rh = cv2.boundingRect(cnt)
                     boundingRect = cv2.boundingRect(cnt)
                     cv2.rectangle(image, (rx, ry), (rx + rw, ry + rh), (23, 184, 80), 1)
+
                     cv2.circle(image, center, radius, (23, 184, 80), 1)
+
                     if [cx, cy, rotation, cnt] not in biggestCnts:
                          biggestCnts.append([cx, cy, rotation, cnt])
 
+
         biggestCnts = sorted(biggestCnts, key=lambda x: x[0])
-        # Target Checking
         for i in range(len(biggestCnts) - 1):
-            #Rotation of two adjacent contours
             tilt1 = biggestCnts[i][2]
             tilt2 = biggestCnts[i + 1][2]
 
@@ -219,7 +213,6 @@ def findTape(contours, image, centerX, centerY):
                     if (cx2 < cx1):
                         continue
                 yawToTarget = calculateYaw(centerOfTarget, centerX, H_FOCAL_LENGTH)
-                #Make sure no duplicates, then append
                 if [centerOfTarget, yawToTarget] not in targets:
                     targets.append([centerOfTarget, yawToTarget])
     if (len(targets) > 0):
@@ -229,13 +222,16 @@ def findTape(contours, image, centerX, centerY):
         cv2.putText(image, "Yaw: " + str(finalTarget[1]), (40, 40), cv2.FONT_HERSHEY_COMPLEX, .6,
                     (255, 255, 255))
         cv2.line(image, (finalTarget[0], screenHeight), (finalTarget[0], 0), (255, 0, 0), 2)
+
         currentAngleError = finalTarget[1]
-        # pushes vision target angle to network tables
         networkTable.putNumber("tapeYaw", currentAngleError)
     else:
         networkTable.putBoolean("tapeDetected", False)
+
     cv2.line(image, (round(centerX), screenHeight), (round(centerX), 0), (255, 255, 255), 2)
+
     return image
+
 
 def checkContours(cntSize, hullSize):
     return cntSize > (image_width / 6)
@@ -251,6 +247,7 @@ def translateRotation(rotation, width, height):
 
 def calculateDistance(heightOfCamera, heightOfTarget, pitch):
     heightOfTargetFromCamera = heightOfTarget - heightOfCamera
+
     '''
     d = distance
     h = height between camera and target
@@ -272,12 +269,15 @@ def calculateDistance(heightOfCamera, heightOfTarget, pitch):
 
     return distance
 
+
 def calculateYaw(pixelX, centerX, hFocalLength):
     yaw = math.degrees(math.atan((pixelX - centerX) / hFocalLength))
     return round(yaw)
 
+
 def calculatePitch(pixelY, centerY, vFocalLength):
     pitch = math.degrees(math.atan((pixelY - centerY) / vFocalLength))
+    # Just stopped working have to do this:
     pitch *= -1
     return round(pitch)
 
@@ -288,7 +288,6 @@ def getEllipseRotation(image, cnt):
         rotation = ellipse[2]
         widthE = ellipse[1][0]
         heightE = ellipse[1][1]
-        # Maps rotation to (-90 to 90). Makes it easier to tell direction of slant
         rotation = translateRotation(rotation, widthE, heightE)
 
         cv2.ellipse(image, ellipse, (23, 184, 80), 3)
@@ -301,7 +300,6 @@ def getEllipseRotation(image, cnt):
         rotation = rect[2]
         width = rect[1][0]
         height = rect[1][1]
-        # Maps rotation to (-90 to 90). Makes it easier to tell direction of slant
         rotation = translateRotation(rotation, width, height)
         return rotation
 
@@ -405,6 +403,7 @@ if __name__ == "__main__":
     if not readConfig():
         sys.exit(1)
 
+    # start NetworkTables
     ntinst = NetworkTablesInstance.getDefault()
     #Name of network table - this is how it communicates with robot. IMPORTANT
     networkTable = NetworkTables.getTable('devilVision')
@@ -428,47 +427,34 @@ if __name__ == "__main__":
 
     webcam = cameras[0]
     cameraServer = streams[0]
-    #Start thread reading camera
     cap = WebcamVideoStream(webcam, cameraServer, image_width, image_height).start()
+
     img = np.zeros(shape=(image_height, image_width, 3), dtype=np.uint8)
-    #Start thread outputing stream
     streamViewer = VideoShow(image_width,image_height, cameraServer, frame=img).start()
     #cap.autoExpose=True;
     tape = False
     fps = FPS().start()
+    #TOTAL_FRAMES = 200;
     # loop forever
     while True:
         timestamp, img = cap.read()
-        #Uncomment if camera is mounted upside down
         #frame = flipImage(img)
-        #Comment out if camera is mounted upside down
         frame = img
         if timestamp == 0:
-            # Send the output the error.
             streamViewer.notifyError(cap.getError())
             continue
-        #Checks if you just want camera for driver (No processing), False by default
         if(networkTable.getBoolean("Driver", False)):
             cap.autoExpose = True
             processed = frame
         else:
-            #Lowers exposure to 0
             cap.autoExpose = False
             boxBlur = blurImg(frame, green_blur)
             threshold = threshold_video(lower_green, upper_green, boxBlur)
             processed = findTargets(frame, threshold)
-        #Puts timestamp of camera on netowrk tables
         networkTable.putNumber("VideoTimestamp", timestamp)
         streamViewer.frame = processed
         fps.update()
         ntinst.flush()
-    #Doesn't do anything at the moment. You can easily get this working by indenting these three lines
-    # and setting while loop to: while fps._numFrames < TOTAL_FRAMES
     fps.stop()
     print("[INFO] elasped time: {:.2f}".format(fps.elapsed()))
     print("[INFO] approx. FPS: {:.2f}".format(fps.fps()))
-
-
-
-
-
